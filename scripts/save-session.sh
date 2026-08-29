@@ -190,11 +190,14 @@ fi
 # --- Validate session ID ---
 # The id becomes a path component under the transcript directory, so it faces
 # the same allowlist every hook applies to stdin session ids (post-tool-hook.sh,
-# session-start-hook.sh): [A-Za-z0-9._-]+ and never "." or "..". That allowlist
+# session-start-hook.sh): [A-Za-z0-9._-]+ and never "." or ".." - plus
+# pipeline/extract.py's own stricter rule, which rejects ".." ANYWHERE in the
+# id (_validate_session_id). Shell and Python must agree or an id can clear
+# this gate and fail later, louder and further from its cause. The allowlist
 # admits Claude's UUIDs and OpenCode's `ses_` ids alike; the former hex-only
 # gate made every OpenCode session-end flush fail "invalid session ID" (#opencode).
 case "$SESSION_ID" in
-    ''|.|..|*[!A-Za-z0-9._-]*)
+    ''|.|..|*..*|*[!A-Za-z0-9._-]*)
         log "save" "ERROR: invalid session ID: $(echo "$SESSION_ID" | head -c 40)"
         exit 1
         ;;

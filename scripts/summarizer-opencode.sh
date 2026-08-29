@@ -65,7 +65,12 @@ _OUT_FILE=$(mktemp) || exit 1
 _ERR_FILE=$(mktemp) || exit 1
 
 # The prompt stays on stdin, never argv - the same limit haiku.py respects.
-cat > "$_STDIN_FILE"
+# Fail closed if the spool cannot be written: proceeding would summarize a
+# truncated prompt into the memory layer, silently corrupting it.
+if ! cat > "$_STDIN_FILE"; then
+    printf 'summarizer-opencode: could not spool the prompt from stdin\n' >&2
+    exit 1
+fi
 
 set -- run
 if [ -n "${REMEMBER_OPENCODE_MODEL:-}" ]; then

@@ -49,4 +49,4 @@ jobs:
         with:
           node-version: 24
       - name: Run plugin tests
-        run: node --test plugin/lib.test.ts
+        run: node --test plugin/lib.test.ts plugin/core.test.ts

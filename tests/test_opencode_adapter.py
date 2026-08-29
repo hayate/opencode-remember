@@ -161,7 +161,6 @@ def test_shim_discards_every_claude_flag(tmp_path):
 
 
 class TestOpenCodeSessionIdAccepted:
-
     def test_save_session_accepts_opencode_shaped_id(self, tmp_path):
         """save-session.sh's id gate requires Claude UUID shape (hex+dashes);
         OpenCode session ids (ses_<base62>) never match it, so every
@@ -171,13 +170,93 @@ class TestOpenCodeSessionIdAccepted:
         from .test_save_session_gates import _make_env, _run
 
         sid = "ses_fb32a3f77ffeM5YYMxr6sFUUyc"
-        env, project, plugin, _calls, _uuid_sid = _make_env(tmp_path, exchanges=0, humans=0)
+        env, project, plugin, _calls, _uuid_sid = _make_env(
+            tmp_path, exchanges=0, humans=0
+        )
         slug = str(project).replace("/", "-").replace(".", "-").replace("_", "-")
         session_dir = tmp_path / "home" / ".claude" / "projects" / slug
         (session_dir / f"{sid}.jsonl").write_text('{"type":"user"}\n' * 10)
 
         result = _run(plugin, env, sid, "--force")
 
-        detail = f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        detail = (
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
         assert result.returncode == 0, detail
         assert "invalid session ID" not in result.stdout + result.stderr, detail
+
+    def test_save_session_still_rejects_traversal_ids(self, tmp_path):
+        """The gate was loosened from Claude UUID shape to the hooks' own
+        allowlist - the negative half must prove traversal ids still fail,
+        or a future 'fix' that deletes the check would pass the positive test
+        while reopening the transcript-dir escape."""
+        from .test_save_session_gates import _make_env, _run
+
+        env, project, plugin, _calls, _uuid_sid = _make_env(
+            tmp_path, exchanges=0, humans=0
+        )
+        # "" is excluded: an empty SESSION_ID is the documented "discover the
+        # newest transcript" path (save-session.sh), not an id at all.
+        for bad in [".", "..", "a/b", "a\\b", "a b", "a\nb", "a..b", "ses_x;rm"]:
+            result = _run(plugin, env, bad, "--force")
+            detail = f"id={bad!r} rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+            assert result.returncode == 1, detail
+            # log() writes to the store's daily log, not the process stdio.
+            log_text = "\n".join(
+                f.read_text(encoding="utf-8", errors="replace")
+                for f in (project / ".remember" / "logs").glob("memory-*.log")
+            )
+            assert "invalid session ID" in log_text, detail
+
+
+class TestShimEdgeCases:
+    def test_shim_empty_stdin_still_emits_valid_json(self, tmp_path):
+        stub = _make_stub(tmp_path)
+        result = _run_shim(tmp_path, stdin="", env={"REMEMBER_OPENCODE_BIN": str(stub)})
+        assert result.returncode == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["type"] == "result"
+        # The stub ignores stdin and always replies; the point is that an
+        # empty prompt flows through without breaking the invocation or the
+        # JSON re-emit.
+        assert payload["result"] == "stub reply"
+
+    def test_shim_missing_binary_fails_loudly(self, tmp_path):
+        result = _run_shim(
+            tmp_path,
+            stdin="prompt",
+            env={"REMEMBER_OPENCODE_BIN": str(tmp_path / "no-such-opencode")},
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip(), "a missing binary must not fail silently"
+
+    def test_shim_binary_path_with_spaces(self, tmp_path):
+        stub_dir = tmp_path / "bin with space"
+        stub_dir.mkdir()
+        stub = stub_dir / "opencode"
+        stub.write_text(OPENCODE_STUB)
+        stub.chmod(0o755)
+        result = _run_shim(
+            tmp_path,
+            stdin="prompt",
+            env={"REMEMBER_OPENCODE_BIN": str(stub), "STUB_REPLY": "spaced reply"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["result"] == "spaced reply"
+
+    def test_shim_fails_closed_when_stdin_spool_fails(self, tmp_path):
+        """A failed stdin spool must abort: proceeding would summarize a
+        truncated prompt into the memory layer. Drive it by shadowing `cat`
+        on PATH with a failing stub."""
+        stub = _make_stub(tmp_path)
+        failing_cat = tmp_path / "bin" / "cat"
+        failing_cat.write_text("#!/bin/sh\nexit 1\n")
+        failing_cat.chmod(0o755)
+        env = {
+            "REMEMBER_OPENCODE_BIN": str(stub),
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        }
+        result = _run_shim(tmp_path, stdin="prompt", env=env)
+        assert result.returncode == 1
+        assert "could not spool the prompt from stdin" in result.stderr
+        assert not (tmp_path / "stub.log").exists(), "opencode must not be invoked on a failed spool"
