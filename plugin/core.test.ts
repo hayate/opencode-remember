@@ -360,3 +360,120 @@ describe("mirror refresh serialization", () => {
     assert.ok(written[written.length - 1].content.includes("NEW"), "the newest snapshot must commit last")
   })
 })
+
+describe("teardown bounds (Codex pass 2)", () => {
+  it("a hung refresh times out and does not wedge later refreshes", async () => {
+    let call = 0
+    const written: { path: string; content: string }[] = []
+    const logs: string[] = []
+    const core = createCore({
+      root: ROOT,
+      mirrorRoot: MIRROR_ROOT,
+      refreshTimeoutMs: 100,
+      client: {
+        session: {
+          messages: async () => {
+            call += 1
+            if (call === 1) return new Promise(() => {})
+            return [{ info: { id: "m1", sessionID: SID, role: "user" }, parts: [{ type: "text", text: "fresh" }] }]
+          },
+          message: async () => ({}),
+        },
+      },
+      spawn: async () => ({ stdout: SLUG, stderr: "", exit: 0 }),
+      writeMirror: async (path, content) => {
+        written.push({ path, content })
+      },
+      log: (m) => logs.push(m),
+      defaultDirectory: "/proj",
+    })
+    await core.handleEvent({ type: "session.created", properties: { info: { id: SID, directory: "/proj" } } })
+    const first = core.onToolAfter(
+      { tool: "Bash", sessionID: SID, callID: "c1", args: {} },
+      { title: "", output: "", metadata: {} },
+    )
+    const started = Date.now()
+    await first
+    assert.ok(Date.now() - started < 2000, "the hung refresh must be bounded by its timeout")
+    assert.ok(logs.some((l) => l.includes("timed out")), logs.join("\n"))
+    await core.onToolAfter(
+      { tool: "Bash", sessionID: SID, callID: "c2", args: {} },
+      { title: "", output: "", metadata: {} },
+    )
+    assert.equal(written.length, 1, "the second refresh must run despite the wedged first one")
+    assert.ok(written[0].content.includes("fresh"))
+  })
+
+  it("logs a failed final refresh instead of silently flushing a stale mirror", async () => {
+    const logs: string[] = []
+    const core = createCore({
+      root: ROOT,
+      mirrorRoot: MIRROR_ROOT,
+      refreshTimeoutMs: 100,
+      disposeDeadlineMs: 5000,
+      client: {
+        session: {
+          messages: async () => {
+            throw new Error("api down")
+          },
+          message: async () => ({}),
+        },
+      },
+      spawn: async () => ({ stdout: SLUG, stderr: "", exit: 0 }),
+      writeMirror: async () => {},
+      log: (m) => logs.push(m),
+      defaultDirectory: "/proj",
+    })
+    await core.handleEvent({ type: "session.created", properties: { info: { id: SID, directory: "/proj" } } })
+    await core.dispose()
+    assert.ok(logs.some((l) => l.includes("final mirror refresh failed") && l.includes("api down")), logs.join("\n"))
+  })
+
+  it("dispose resolves only after the session-end hook has exited", async () => {
+    let endHookFinished = false
+    const core = createCore({
+      root: ROOT,
+      mirrorRoot: MIRROR_ROOT,
+      client: { session: { messages: async () => [], message: async () => ({}) } },
+      spawn: async (args) => {
+        if (args[0] === "bash" && args[1] === "-c") return { stdout: SLUG, stderr: "", exit: 0 }
+        const script = args[1].split("/").pop()
+        if (script === "session-end-hook.sh") {
+          await new Promise((r) => setTimeout(r, 50))
+          endHookFinished = true
+        }
+        return { stdout: "", stderr: "", exit: 0 }
+      },
+      writeMirror: async () => {},
+      log: () => {},
+      defaultDirectory: "/proj",
+    })
+    await core.handleEvent({ type: "session.created", properties: { info: { id: SID, directory: "/proj" } } })
+    await core.dispose()
+    assert.equal(endHookFinished, true, "dispose must not resolve before the end hook ran")
+  })
+
+  it("dispose is bounded even when a hook hangs forever", async () => {
+    const logs: string[] = []
+    const core = createCore({
+      root: ROOT,
+      mirrorRoot: MIRROR_ROOT,
+      disposeDeadlineMs: 150,
+      client: { session: { messages: async () => [], message: async () => ({}) } },
+      spawn: async (args) => {
+        if (args[0] === "bash" && args[1] === "-c") return { stdout: SLUG, stderr: "", exit: 0 }
+        const script = args[1].split("/").pop()
+        if (script === "session-end-hook.sh") return new Promise(() => {})
+        return { stdout: "", stderr: "", exit: 0 }
+      },
+      writeMirror: async () => {},
+      log: (m) => logs.push(m),
+      defaultDirectory: "/proj",
+    })
+    await core.handleEvent({ type: "session.created", properties: { info: { id: SID, directory: "/proj" } } })
+    const started = Date.now()
+    await core.dispose()
+    assert.ok(Date.now() - started < 3000, "dispose must return despite a hung end hook")
+    assert.ok(logs.some((l) => l.includes("dispose deadline")), logs.join("\n"))
+  })
+})

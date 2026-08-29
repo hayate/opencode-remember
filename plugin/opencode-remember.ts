@@ -44,6 +44,31 @@ export const OpenCodeRemember: Plugin = async ({ client, directory }) => {
   const ROOT = dirname(import.meta.dir)
   const MIRROR_ROOT = mirrorRootFromEnv()
 
+  // A hook that floods stdout/stderr must not grow host memory without
+  // bound, and a hook that never exits must not hang a refresh or teardown
+  // forever. Reads stop at the cap (the pipe then fills and the process
+  // blocks, which is what the timeout kill is for).
+  const OUTPUT_CAP = 1_048_576
+  const SPAWN_TIMEOUT_MS = 30_000
+
+  const readBounded = async (stream: ReadableStream<Uint8Array>, cap: number): Promise<string> => {
+    const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let out = ""
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      if (out.length + chunk.length > cap) {
+        out += chunk.slice(0, Math.max(0, cap - out.length))
+        out += "\n[... output truncated]"
+        break
+      }
+      out += chunk
+    }
+    return out
+  }
+
   const spawn: Spawn = async (args, opts) => {
     const proc = Bun.spawn(args, {
       cwd: opts.cwd,
@@ -54,14 +79,25 @@ export const OpenCodeRemember: Plugin = async ({ client, directory }) => {
     })
     proc.stdin.write(opts.stdin ?? "")
     proc.stdin.end()
-    // Read both streams concurrently: a hook writing past the stderr pipe
-    // buffer while nothing drains it would block the process dead.
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
-    await proc.exited
-    return { stdout, stderr, exit: proc.exitCode ?? 0 }
+    const timer = setTimeout(() => {
+      try {
+        proc.kill()
+      } catch {
+        // already gone
+      }
+    }, SPAWN_TIMEOUT_MS)
+    try {
+      // Read both streams concurrently: a hook writing past the stderr pipe
+      // buffer while nothing drains it would block the process dead.
+      const [stdout, stderr] = await Promise.all([
+        readBounded(proc.stdout, OUTPUT_CAP),
+        readBounded(proc.stderr, OUTPUT_CAP),
+      ])
+      await proc.exited
+      return { stdout, stderr, exit: proc.exitCode ?? 0 }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   const writeMirror = async (path: string, content: string) => {

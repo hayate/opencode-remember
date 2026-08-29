@@ -38,7 +38,12 @@ export type CoreInput = {
   writeMirror(path: string, content: string): Promise<void>
   log(message: string): void
   defaultDirectory: string
+  refreshTimeoutMs?: number
+  disposeDeadlineMs?: number
 }
+
+const REFRESH_TIMEOUT_MS = 10_000
+const DISPOSE_DEADLINE_MS = 25_000
 
 type SessionState = {
   id: string
@@ -73,6 +78,25 @@ export function nestedGuardDisabled(env: Record<string, string | undefined>): bo
 export function createCore(input: CoreInput): Core {
   const { root, mirrorRoot, client, spawn, writeMirror, log, defaultDirectory } = input
   const SCRIPTS = join(root, "scripts")
+  const REFRESH_TIMEOUT = input.refreshTimeoutMs ?? REFRESH_TIMEOUT_MS
+  const DISPOSE_DEADLINE = input.disposeDeadlineMs ?? DISPOSE_DEADLINE_MS
+
+  const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout>
+    return new Promise<T>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+      promise.then(
+        (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        (error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
+    })
+  }
 
   const sessions = new Map<string, SessionState>()
   const promptFired = new Set<string>()
@@ -141,7 +165,11 @@ export function createCore(input: CoreInput): Core {
     const run = state.refreshQueue.then(async () => {
       await state.slugPromise
       if (!state.transcriptPath) return
-      const res: unknown = await client.session.messages({ path: { id: state.id } })
+      const res: unknown = await withTimeout(
+        client.session.messages({ path: { id: state.id } }),
+        REFRESH_TIMEOUT,
+        `mirror refresh for session ${state.id}`,
+      )
       const items = Array.isArray(res)
         ? (res as { info?: unknown; parts?: unknown }[])
         : ((res as { data?: { info?: unknown; parts?: unknown }[] }).data ?? [])
@@ -160,11 +188,16 @@ export function createCore(input: CoreInput): Core {
       // A transiently empty read (session just created, an API hiccup) must
       // not atomically erase the transcript the pipeline has already consumed.
       if (!jsonl) return
-      await writeMirror(state.transcriptPath, jsonl)
+      await withTimeout(
+        writeMirror(state.transcriptPath, jsonl),
+        REFRESH_TIMEOUT,
+        `mirror write for session ${state.id}`,
+      )
     })
     // Serialized per session: refreshes run in order, so an older snapshot
     // can never commit after a newer one, and each caller awaits its own
-    // run while the next waits behind it.
+    // run while the next waits behind it. The timeout keeps one hung read
+    // from wedging the queue (and teardown behind it) forever.
     state.refreshQueue = run.then(
       () => undefined,
       () => undefined,
@@ -180,15 +213,22 @@ export function createCore(input: CoreInput): Core {
         if (!state.transcriptPath) return
         // Refresh BEFORE the flush: the end hook reads the mirror, and the
         // final turn's tail may never have been written (idle refreshes are
-        // fire-and-forget). A failed final write must not block teardown;
-        // the flush then reads the last completed mirror, and the next
-        // session start's recovery block is the backstop.
+        // fire-and-forget). A failed final refresh is logged, not swallowed:
+        // the flush then saves the last completed mirror, and the next
+        // session start's recovery block is the backstop - but the operator
+        // must see that this session's tail may be missing.
         try {
           await refreshMirror(state)
-        } catch {
-          // degraded, not silent: the end hook's own save logs its failure
+        } catch (error) {
+          log(
+            `opencode-remember: final mirror refresh failed for session ${state.id}: ${String(error)} - flushing the last completed mirror`,
+          )
         }
-        fireHook(
+        // Awaited, not fire-and-forget: dispose waits on this chain, and the
+        // end hook backgrounds its own save once it has launched it - the
+        // hook's own exit is the point where the flush is guaranteed to be
+        // in flight.
+        await runHook(
           "session-end-hook.sh",
           sessionEndPayload(state.id, state.transcriptPath, state.directory, reason),
           state.directory,
@@ -293,7 +333,9 @@ export function createCore(input: CoreInput): Core {
         const sessionID = props.sessionID as string | undefined
         const state = sessionID ? sessions.get(sessionID) : undefined
         if (state && !state.ended) {
-          await refreshMirror(state).catch(() => {})
+          await refreshMirror(state).catch((error) => {
+            log(`opencode-remember: idle mirror refresh failed for session ${state.id}: ${String(error)}`)
+          })
         }
         return
       }
@@ -304,9 +346,12 @@ export function createCore(input: CoreInput): Core {
       if (!state || state.ended) return
       try {
         await refreshMirror(state)
-      } catch {
+      } catch (error) {
         // A failed mirror write must not break the tool call; the next idle
-        // event retries the same refresh.
+        // event retries the same refresh. But it is logged: a capture
+        // failure nobody can see is the failure mode this plugin exists to
+        // prevent.
+        log(`opencode-remember: mirror refresh failed for session ${state.id}: ${String(error)}`)
       }
       fireHook(
         "post-tool-hook.sh",
@@ -348,9 +393,17 @@ export function createCore(input: CoreInput): Core {
       }
       sessions.clear()
       // opencode awaits dispose: let the flush reach the mirror and the end
-      // hook before the process goes away.
+      // hook launch its background save before the process goes away. The
+      // deadline bounds the pathological case - a hung client read or hook -
+      // so plugin teardown can never wedge the host forever.
       if (pendingEnds.size > 0) {
-        await Promise.all(pendingEnds).catch(() => {})
+        await withTimeout(
+          Promise.all(pendingEnds).catch(() => {}),
+          DISPOSE_DEADLINE,
+          "dispose deadline",
+        ).catch((error) => {
+          log(`opencode-remember: ${String(error)} - teardown aborted with flushes still pending; the next session start's recovery block is the backstop`)
+        })
       }
     },
   }
