@@ -37,3 +37,16 @@ jobs:
         run: pip install tzdata
       - name: Run tests
         run: pytest
+
+  plugin-ts:
+    # The OpenCode adapter's pure logic (plugin/lib.ts). Runs under plain
+    # Node with type stripping; the Bun-specific glue (plugin/opencode-remember.ts)
+    # is exercised by the smoke test against a real opencode install, not by CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run plugin tests
+        run: node --test plugin/lib.test.ts

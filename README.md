@@ -1,56 +1,47 @@
-# Continuous Memory for Claude Code
+# Continuous Memory for OpenCode
 
-![claude-remember — continuous memory for Claude Code](docs/remember.png)
+![claude-remember - continuous memory for OpenCode](docs/remember.png)
 
-[![Tests](https://github.com/Digital-Process-Tools/claude-remember/actions/workflows/tests.yml/badge.svg)](https://github.com/Digital-Process-Tools/claude-remember/actions/workflows/tests.yml)
+[![Tests](https://github.com/hayate/opencode-remember/actions/workflows/tests.yml/badge.svg)](https://github.com/hayate/opencode-remember/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![OS](https://img.shields.io/badge/tested%20on-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Digital-Process-Tools/claude-remember/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.23.0-orange)](.claude-plugin/plugin.json)
 
-Claude Code starts every session blank. It doesn't know what you worked on yesterday, what conventions your team follows, or what mistakes it already made. You re-explain everything, every time.
+> **This is a port of [Digital-Process-Tools/claude-remember](https://github.com/Digital-Process-Tools/claude-remember) to [OpenCode](https://opencode.ai).** All upstream code is preserved byte-identical, including its license, attribution, tests and history; the only additions are an OpenCode adapter plugin (`plugin/`), a summarizer shim (`scripts/summarizer-opencode.sh`), and the install section below. Everything else in this README documents the upstream plugin and remains true of this port.
 
-Claude Remember fixes that. It hooks into Claude Code's lifecycle — saving sessions automatically, compressing them through Haiku into layered daily summaries, and loading them back into context on the next session start. No manual prompting, no copy-pasting notes. The agent starts every session with its history already present.
+OpenCode starts every session blank. It doesn't know what you worked on yesterday, what conventions your team follows, or what mistakes it already made. You re-explain everything, every time.
 
-The result: your Claude Code instance develops continuity. It remembers what it learned, what broke, what worked. Not perfect recall — compressed, practical memory that fits in minimal tokens.
+Claude Remember fixes that. It hooks into OpenCode's lifecycle - saving sessions automatically, compressing them through Haiku into layered daily summaries, and loading them back into context on the next session start. No manual prompting, no copy-pasting notes. The agent starts every session with its history already present.
+
+The result: your OpenCode instance develops continuity. It remembers what it learned, what broke, what worked. Not perfect recall - compressed, practical memory that fits in minimal tokens.
 
 ## Install
 
-### From our marketplace (recommended)
+### Install
 
-We maintain our own [plugin marketplace](https://github.com/Digital-Process-Tools/claude-marketplace) so updates actually work. Add it once, then install:
+OpenCode loads plugins from its config. Clone this repo somewhere stable (updating later is a `git pull`), then add it to `~/.config/opencode/opencode.json` for every project, or to a project's `opencode.json` for just that project:
 
-```
-/plugin marketplace add Digital-Process-Tools/claude-marketplace
-/plugin install remember@dpt-plugins
-```
-
-To update later:
-
-```
-/plugin marketplace update
-```
-
-**Restart Claude Code after installing or enabling.** Claude Code reads hook registrations when a session starts, so a plugin enabled part-way through one has no hooks wired for the rest of it — `PostToolUse` never fires and nothing is captured, with no error anywhere ([#200](https://github.com/Digital-Process-Tools/claude-remember/issues/200)). Nothing inside a hook can detect this while it is happening, so the plugin reports it at the *next* session start instead. If capture seems to be doing nothing, run `/remember:doctor`.
-
-### From the Anthropic Marketplace
-
-Claude Remember is also available in the official Anthropic Marketplace. In Claude Code, type `/plugin` and search for "remember".
-
-**Releases reach this route on the catalogue's schedule, not ours, and that schedule is not predictable from ours.** `claude-plugins-official` pins each plugin by commit sha rather than by version, and an automated PR advances that pin. Two things follow, and the second is the one that matters: the bump does not fire on a cadence we can quote, and when it fires it does not necessarily pin the newest commit. The lag is unbounded, not something our own release cadence lets you predict, and it has been observed skipping more than one tagged release in a row -- not just one.
-
-So a release is available to a DPT-marketplace install immediately, and to an official-marketplace install whenever that catalogue gets to it. We are not going to put a number on the delay; we had one here for a day and it was already wrong the day after. Measure your own exposure instead:
-
-```
-gh api repos/anthropics/claude-plugins-official/contents/.claude-plugin/marketplace.json --jq '.content' | base64 -d | grep -A6 '"name": "remember"'
-git log -1 --format='%h %ad %s' --date=short <sha>
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["/absolute/path/to/opencode-remember/plugin/opencode-remember.ts"],
+  "skills": {
+    "paths": ["/absolute/path/to/opencode-remember/skills"]
+  }
+}
 ```
 
-The first command decodes the whole catalogue and filters it down to this plugin's own entry, which carries the pinned commit sha; take that sha and give it to the second command, which resolves it against this repo's own history to a date and a commit message. Three outcomes, and only the last two mean the catalogue is behind: the pin resolves to the commit for the release you already expect (current); the pin resolves to an older commit, and the date is your lag (behind, by however long the second command says); or either command fails, or the `grep` finds no `remember` entry at all (the pin could not be read -- treat that as unknown, not as current).
+The `skills` entry makes the `/remember` handoff skill available to the agent. The plugin itself:
 
-**`FORCE_AUTOUPDATE_PLUGINS=1` cannot cross that boundary,** because there is nothing stale on your side to force. Against a catalogue pinned behind the current release, `claude plugin update remember@claude-plugins-official` correctly reports the plugin as already current at the pinned version. The CLI is right and the input is old ([#264](https://github.com/Digital-Process-Tools/claude-remember/issues/264)). Waiting for the next bump works; installing from the DPT marketplace above skips the wait.
+- fires the upstream hook scripts from OpenCode events (`session.created`, `tool.execute.after`, `message.updated`, `session.deleted`, plugin `dispose`), synthesizing the same stdin payloads the hooks read (`session_id`, `transcript_path`, `cwd`, `source`, `reason`, tool fields);
+- maintains a Claude-format JSONL mirror of the active session under `~/.cache/opencode/remember-mirror/` and points `CLAUDE_CONFIG_DIR` at it, so the unchanged upstream pipeline reads OpenCode sessions as though they were Claude transcripts (set `REMEMBER_OPENCODE_MIRROR` to relocate it);
+- feeds the SessionStart memory injection into the session context on every request via `experimental.chat.system.transform`;
+- points `REMEMBER_CLAUDE_BIN` at `scripts/summarizer-opencode.sh`, so background consolidation shells `opencode run` instead of `claude -p` (set `REMEMBER_OPENCODE_MODEL` to a `provider/model` to pick the summarizer model, or leave it to OpenCode's config).
 
-**Separately, `plugin update` can report "already at latest version" from a stale local cache** without pulling first ([#37252](https://github.com/anthropics/claude-code/issues/37252), [#38271](https://github.com/anthropics/claude-code/issues/38271)). That one is a client-side cache and is a different failure from the pin lag above, though both surface the same sentence.
+**Restart OpenCode after installing.** Config is read once at startup, and the adapter only wires a session's hooks when the plugin is loaded for it - the same mid-session-enable gap the upstream README documents for Claude Code. If capture seems to be doing nothing, ask the agent to run `bash "$PLUGIN_ROOT/scripts/doctor.sh"` (the plugin exports `PLUGIN_ROOT` to the agent's shell), or copy [`opencode/command/remember-doctor.md`](opencode/command/remember-doctor.md) into `~/.config/opencode/command/` for a `remember-doctor` slash command.
+
+**Storage is the same as upstream**: memory lands under `<project>/.remember/` by default, or `~/.remember/<slug>/` in external mode. If you already run upstream claude-remember with an external store, this port shares it.
 
 ### Codex (scaffolding, not yet verified against a live install)
 
@@ -73,6 +64,7 @@ The plugin location depends on your install type:
 
 | Install type                       | Location                                                                          |
 | ---------------------------------- | --------------------------------------------------------------------------------- |
+| OpenCode (this port)               | wherever you cloned it; the adapter plugin is `plugin/opencode-remember.ts`        |
 | DPT marketplace (macOS/Linux)      | `~/.claude/plugins/cache/dpt-plugins/remember/<version>/`                         |
 | Official marketplace (macOS/Linux) | `~/.claude/plugins/cache/claude-plugins-official/remember/<version>/`             |
 | Official marketplace (Windows)     | `%USERPROFILE%\.claude\plugins\cache\claude-plugins-official\remember\<version>\` |
