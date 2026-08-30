@@ -13,3 +13,6 @@ identity.md
 .claude/settings.local.json
 .claude/jit-context/.discovery/
 .max/
+
+# npm pack artifacts
+*.tgz

@@ -18,7 +18,24 @@ The result: your OpenCode instance develops continuity. It remembers what it lea
 
 ## Install
 
-### Install
+### Install via npm
+
+```
+npm i opencode-remember
+```
+
+then add it to `~/.config/opencode/opencode.json` (or a project's `opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-remember"]
+}
+```
+
+OpenCode fetches npm plugins itself (into `~/.cache/opencode/packages/`); nothing else is needed. For the `/remember` handoff skill, point the skills config at the package inside that cache dir, e.g. `~/.cache/opencode/packages/opencode-remember@latest/node_modules/opencode-remember/skills` (the `@latest` version is the one npm-named plugins resolve to).
+
+### Install from a clone
 
 OpenCode loads plugins from its config. Clone this repo somewhere stable (updating later is a `git pull`), then add it to `~/.config/opencode/opencode.json` for every project, or to a project's `opencode.json` for just that project:
 

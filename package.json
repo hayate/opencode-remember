@@ -1,0 +1,48 @@
+{
+  "name": "opencode-remember",
+  "version": "0.23.0",
+  "type": "module",
+  "description": "Continuous memory for OpenCode. A port of Digital-Process-Tools/claude-remember: saves sessions automatically, compresses them into tiered daily summaries, and injects them back into context at session start.",
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "test": "node --test plugin/*.test.ts"
+  },
+  "main": "plugin/opencode-remember.ts",
+  "exports": {
+    ".": "./plugin/opencode-remember.ts"
+  },
+  "files": [
+    "plugin/core.ts",
+    "plugin/lib.ts",
+    "plugin/opencode-remember.ts",
+    "scripts",
+    "pipeline/*.py",
+    "prompts",
+    "hooks.d",
+    "skills",
+    "opencode",
+    ".claude-plugin/plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "memory",
+    "context"
+  ],
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.25"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hayate/opencode-remember.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hayate/opencode-remember/issues"
+  },
+  "homepage": "https://github.com/hayate/opencode-remember#readme"
+}
