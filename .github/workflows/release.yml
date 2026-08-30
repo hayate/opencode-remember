@@ -40,7 +40,14 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm test
-      - run: npm publish --access public
+      - name: publish to npm
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view opencode-remember@"$VERSION" version >/dev/null 2>&1; then
+            echo "$VERSION already on npm; skipping publish"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes
