@@ -46,7 +46,7 @@ jobs:
           if npm view opencode-remember@"$VERSION" version >/dev/null 2>&1; then
             echo "$VERSION already on npm; skipping publish"
           else
-            npm publish --access public
+            npm publish --access public --provenance
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

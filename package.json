@@ -1,6 +1,6 @@
 {
   "name": "opencode-remember",
-  "version": "0.23.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "Continuous memory for OpenCode. A port of Digital-Process-Tools/claude-remember: saves sessions automatically, compresses them into tiered daily summaries, and injects them back into context at session start.",
   "license": "SEE LICENSE IN LICENSE",
